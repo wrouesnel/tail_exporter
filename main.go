@@ -18,6 +18,7 @@ import (
 	"github.com/wrouesnel/tail_exporter/config"
 	"sync"
 	"os"
+	"strings"
 )
 
 const Namespace string = "tail_collector"
@@ -405,7 +406,7 @@ func main() {
       <body>
       <h1>TCP/UDP Tail Exporter</h1>
       <p>Accepting raw lines over TCP and UDP on ` + *collectorAddress + `</p>
-      <p>Watching files for lines:` + flag.Args() + `</p>
+      <p>Watching files for lines:` + strings.Join(flag.Args(), ", ") + `</p>
       <p><a href="` + *metricsPath + `">Metrics</a></p>
       <h1>Config</h1>
       <pre>` +
