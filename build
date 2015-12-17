@@ -1,0 +1,10 @@
+#!/bin/bash
+# Builds the 32-bit and 64-bit binaries, suitable for use with an ansible role.
+
+
+GOARCH=amd64 go build -o tail_exporter.x86_64 --ldflags '-extldflags "-static"'
+
+# doesn't work at the moment
+#CGO_ENABLED=1 GOARCH=386 go build -o tail_exporter.i386 --ldflags '-extldflags "-static"'
+
+

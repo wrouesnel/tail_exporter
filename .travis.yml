@@ -1,0 +1,8 @@
+language: go
+go:
+- 1.5.1
+
+addons:
+  apt:
+    packages:
+    - libpcre3-dev

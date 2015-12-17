@@ -1,0 +1,11 @@
+metric_configs:
+- name: exim_mail_count
+  help: counter of mail processing results
+  type: counter
+  regex: '^METRICS: uuid=(\S+) result=(\S+)'
+  labels:
+  - name: uuid
+    value: $1
+  - name: result
+    value: $2
+  value: increment
