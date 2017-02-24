@@ -16,29 +16,30 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/common/log"
 	"github.com/wrouesnel/tail_exporter/config"
-	"sync"
 	"os"
 	"strings"
+	"sync"
 )
 
+// Namespace is the metric namespace of this collector
 const Namespace string = "tail_collector"
 
 var (
 	listeningAddress = flag.String("web.listen-address", ":9130", "Address on which to expose metrics.")
 	metricsPath      = flag.String("web.telemetry-path", "/metrics", "Path under which to expose Prometheus metrics.")
 	collectorAddress = flag.String("collector.listen-address", ":9129", "TCP and UDP address on which to accept lines")
-	configFile    	 = flag.String("config.file", "", "Configuration file path")
+	configFile       = flag.String("config.file", "", "Configuration file path")
 )
 
 // TailCollector implements the main collector process.
 type TailCollector struct {
-	cfg *config.Config	// Configuration
-	metrics map[string]*prometheus.MetricVec	// map of initialized metrics
-	mmtx sync.Mutex	// Metric initialization lock for map writes
+	cfg     *config.Config                   // Configuration
+	metrics map[string]*prometheus.MetricVec // map of initialized metrics
+	mmtx    *sync.Mutex                       // Metric initialization lock for map writes
 
-	regexCh []chan string	// list of regex processors
+	regexCh []chan string // list of regex processors
 
-	numMetrics prometheus.Gauge	// our own metric + lets initialization succeed
+	numMetrics    prometheus.Gauge   // our own metric + lets initialization succeed
 	ingestedLines prometheus.Counter // number of lines we've ingested
 	//rejectedLines *prometheus.CounterVec // number of rejected values
 	//timedoutMetrics prometheus.Counter // number of metrics which have been dropped due to internal timeouts
@@ -48,41 +49,41 @@ func newTailCollector(cfg *config.Config) *TailCollector {
 	c := TailCollector{}
 	c.cfg = cfg
 	c.metrics = make(map[string]*prometheus.MetricVec)
-
+	c.mmtx = new(sync.Mutex)
 	c.regexCh = make([]chan string, len(cfg.MetricConfigs))
 
 	// Initialize regex processors
 	for idx, mp := range cfg.MetricConfigs {
 		ch := make(chan string, 1)
 		c.regexCh[idx] = ch
-		go c.lineProcessor(ch,mp)
+		go c.lineProcessor(ch, mp)
 	}
 
 	// Set constant metrics
 	c.numMetrics = prometheus.NewGauge(
 		prometheus.GaugeOpts{
 			Namespace: Namespace,
-			Name: "metric_regexes",
-			Help: "currently configured number of metric regexes",
+			Name:      "metric_regexes",
+			Help:      "currently configured number of metric regexes",
 		},
 	)
 
 	c.ingestedLines = prometheus.NewCounter(
 		prometheus.CounterOpts{
 			Namespace: Namespace,
-			Name: "ingested_lines_total",
-			Help: "total number of lines ingested by collection inputs",
+			Name:      "ingested_lines_total",
+			Help:      "total number of lines ingested by collection inputs",
 		},
 	)
 
-//	c.rejectedLines = prometheus.NewCounterVec(
-//		prometheus.CounterOpts{
-//			Namespace: Namespace,
-//			Name: "rejected_lines_total",
-//			Help: "total number of lines rejected during parsing",
-//		},
-//		[]string{"reason"},
-//	)
+	//	c.rejectedLines = prometheus.NewCounterVec(
+	//		prometheus.CounterOpts{
+	//			Namespace: Namespace,
+	//			Name: "rejected_lines_total",
+	//			Help: "total number of lines rejected during parsing",
+	//		},
+	//		[]string{"reason"},
+	//	)
 
 	c.numMetrics.Set(float64(len(cfg.MetricConfigs)))
 	return &c
@@ -99,7 +100,7 @@ func (c *TailCollector) processReader(reader io.Reader) {
 	}
 }
 
-// Ingest a line
+// IngestLine consumes a line from the file tailing engine
 func (c *TailCollector) IngestLine(line string) {
 	c.ingestedLines.Inc()
 	// Dispatch the line to all active regex parsers
@@ -123,7 +124,7 @@ func (c *TailCollector) initalizeMetric(cfg *config.MetricParser) *prometheus.Me
 
 	switch cfg.Type {
 	case config.METRIC_COUNTER:
-		metricVec = &prometheus.NewCounterVec(
+		metricVec = prometheus.NewCounterVec(
 			prometheus.CounterOpts{
 				Name: cfg.Name,
 				Help: cfg.Help,
@@ -132,7 +133,7 @@ func (c *TailCollector) initalizeMetric(cfg *config.MetricParser) *prometheus.Me
 		).MetricVec
 
 	case config.METRIC_GAUGE:
-		metricVec = &prometheus.NewGaugeVec(
+		metricVec = prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
 				Name: cfg.Name,
 				Help: cfg.Help,
@@ -140,7 +141,7 @@ func (c *TailCollector) initalizeMetric(cfg *config.MetricParser) *prometheus.Me
 			labelSet,
 		).MetricVec
 	default:
-		metricVec = &prometheus.NewUntypedVec(
+		metricVec = prometheus.NewUntypedVec(
 			prometheus.UntypedOpts{
 				Name: cfg.Name,
 				Help: cfg.Help,
@@ -157,8 +158,9 @@ func (c *TailCollector) lineProcessor(lineCh chan string, cfg config.MetricParse
 	// Run all regexes
 	labelValues := make([]string, len(cfg.Labels))
 
-	processloop: for line := range lineCh {
-		m := cfg.Regex.MatcherString(line,0)
+processloop:
+	for line := range lineCh {
+		m := cfg.Regex.MatcherString(line, 0)
 		if !m.Matches() {
 			continue
 		}
@@ -209,7 +211,7 @@ func (c *TailCollector) lineProcessor(lineCh chan string, cfg config.MetricParse
 			case prometheus.Gauge:
 				t.Set(cfg.Value.Literal)
 			case prometheus.Counter:
-				t.Set(cfg.Value.Literal)
+				t.Add(cfg.Value.Literal)
 			case prometheus.Untyped:
 				t.Set(cfg.Value.Literal)
 			default:
@@ -222,8 +224,8 @@ func (c *TailCollector) lineProcessor(lineCh chan string, cfg config.MetricParse
 			if err != nil {
 				log.With("name", cfg.Name).
 					With("group_name", cfg.Value.CaptureGroup).
-					With("line",line).
-					With("value",valstr).
+					With("line", line).
+					With("value", valstr).
 					Warnln("Dropping line with unconvertible capture value")
 				continue
 			}
@@ -232,7 +234,7 @@ func (c *TailCollector) lineProcessor(lineCh chan string, cfg config.MetricParse
 			case prometheus.Gauge:
 				t.Set(val)
 			case prometheus.Counter:
-				t.Set(val)
+				t.Add(val)
 			case prometheus.Untyped:
 				t.Set(val)
 			default:
@@ -243,7 +245,7 @@ func (c *TailCollector) lineProcessor(lineCh chan string, cfg config.MetricParse
 			if !m.NamedPresent(cfg.Value.CaptureGroupName) {
 				log.With("name", cfg.Name).
 					With("group_name", cfg.Value.CaptureGroup).
-					With("line",line).
+					With("line", line).
 					Warnln("Dropping line with missing capture value")
 				continue
 			}
@@ -252,8 +254,8 @@ func (c *TailCollector) lineProcessor(lineCh chan string, cfg config.MetricParse
 			if err != nil {
 				log.With("name", cfg.Name).
 					With("group_name", cfg.Value.CaptureGroupName).
-					With("line",line).
-					With("value",valstr).
+					With("line", line).
+					With("value", valstr).
 					Warnln("Dropping line with unconvertible capture value")
 				continue
 			}
@@ -262,7 +264,7 @@ func (c *TailCollector) lineProcessor(lineCh chan string, cfg config.MetricParse
 			case prometheus.Gauge:
 				t.Set(val)
 			case prometheus.Counter:
-				t.Set(val)
+				t.Add(val)
 			case prometheus.Untyped:
 				t.Set(val)
 			default:
@@ -286,7 +288,8 @@ func (c *TailCollector) lineProcessor(lineCh chan string, cfg config.MetricParse
 			case prometheus.Gauge:
 				t.Dec()
 			case prometheus.Counter:
-				t.Set(0) // Subtract means reset for a counter
+				//t.(0) // Subtract means reset for a counter
+				// NoOp.
 			case prometheus.Untyped:
 				t.Dec()
 			default:
@@ -297,7 +300,7 @@ func (c *TailCollector) lineProcessor(lineCh chan string, cfg config.MetricParse
 }
 
 // Collect implements prometheus.Collector.
-func (c TailCollector) Collect(ch chan<- prometheus.Metric) {
+func (c *TailCollector) Collect(ch chan<- prometheus.Metric) {
 	c.numMetrics.Collect(ch)
 	c.ingestedLines.Collect(ch)
 	//c.rejectedLines.Collect(ch)
@@ -308,7 +311,7 @@ func (c TailCollector) Collect(ch chan<- prometheus.Metric) {
 }
 
 // Describe implements prometheus.Collector.
-func (c TailCollector) Describe(ch chan<- *prometheus.Desc) {
+func (c *TailCollector) Describe(ch chan<- *prometheus.Desc) {
 	c.numMetrics.Describe(ch)
 	c.ingestedLines.Describe(ch)
 	//c.rejectedLines.Describe(ch)
@@ -337,7 +340,7 @@ func main() {
 				var isPipe bool
 				st, err := os.Stat(filename)
 				if err == nil {
-					if st.Mode() & os.ModeNamedPipe == os.ModeNamedPipe {
+					if st.Mode()&os.ModeNamedPipe == os.ModeNamedPipe {
 						isPipe = true
 					}
 				} else {
@@ -345,10 +348,13 @@ func main() {
 				}
 
 				t, err := tail.TailFile(filename, tail.Config{
-					Location: &tail.SeekInfo{0,os.SEEK_END},
-					ReOpen: true,
-					Follow: isPipe,
+					Location: &tail.SeekInfo{0, os.SEEK_END},
+					ReOpen:   true,
+					Follow:   isPipe,
 				})
+				if err != nil {
+					log.Errorln("Error tailing file:", filename)
+				}
 
 				for line := range t.Lines {
 					c.IngestLine(line.Text)
@@ -410,8 +416,8 @@ func main() {
       <p><a href="` + *metricsPath + `">Metrics</a></p>
       <h1>Config</h1>
       <pre>` +
-      cfg.Original +
-      `</pre>
+			cfg.Original +
+			`</pre>
       </body>
       </html>`))
 	})

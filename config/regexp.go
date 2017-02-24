@@ -3,17 +3,17 @@
 package config
 
 import (
-	"github.com/glenn-brown/golang-pkg-pcre/src/pkg/pcre"
-"strings"
 	"fmt"
+	"github.com/glenn-brown/golang-pkg-pcre/src/pkg/pcre"
 	"gopkg.in/yaml.v2"
+	"strings"
 )
 
-// Regex fields which fail to parse are parsed again against this to allow using
-// the full PCRE library.
+// flaggedRegex fields which fail to parse are parsed again against this to
+// allow using the full PCRE library.
 type flaggedRegex struct {
-	regex string	`yaml:"expr"`
-	flags string	`yaml:"flags,omitempty"`
+	regex string `yaml:"expr"`
+	flags string `yaml:"flags,omitempty"`
 }
 
 // Regexp encapsulates a regexp.Regexp and makes it YAML marshallable.
@@ -22,16 +22,21 @@ type Regexp struct {
 	original flaggedRegex
 }
 
+// RegexpCompileError wraps the pcre Compile error
 type RegexpCompileError struct {
 	*pcre.CompileError
 }
+
 func (this RegexpCompileError) Error() string {
 	return this.CompileError.String()
 }
 
+// RegexpFlagsError provides a useful error message when bad flags are found
+// for the supplied regexp
 type RegexpFlagsError struct {
 	badflag string
 }
+
 func (this RegexpFlagsError) Error() string {
 	return fmt.Sprintf("Invalid regex flag specificed: %s", this.badflag)
 }
@@ -106,7 +111,7 @@ func NewRegexp(s flaggedRegex) (*Regexp, error) {
 		return nil, err
 	}
 
-	regex, cerr := pcre.Compile(s.regex,flags)
+	regex, cerr := pcre.Compile(s.regex, flags)
 	if cerr != nil {
 		return nil, RegexpCompileError{cerr}
 	}
