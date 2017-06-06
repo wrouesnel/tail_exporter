@@ -211,7 +211,7 @@ processloop:
 			case prometheus.Gauge:
 				t.Set(cfg.Value.Literal)
 			case prometheus.Counter:
-				t.Add(cfg.Value.Literal)
+				t.Set(cfg.Value.Literal)
 			case prometheus.Untyped:
 				t.Set(cfg.Value.Literal)
 			default:
@@ -264,7 +264,7 @@ processloop:
 			case prometheus.Gauge:
 				t.Set(val)
 			case prometheus.Counter:
-				t.Add(val)
+				t.Set(val)
 			case prometheus.Untyped:
 				t.Set(val)
 			default:
@@ -288,8 +288,8 @@ processloop:
 			case prometheus.Gauge:
 				t.Dec()
 			case prometheus.Counter:
-				//t.(0) // Subtract means reset for a counter
-				// NoOp.
+				// Subtract means reset for a counter
+				t.Reset()
 			case prometheus.Untyped:
 				t.Dec()
 			default:
