@@ -19,7 +19,6 @@ import (
 	"os"
 	"strings"
 	"sync"
-	"github.com/cornelk/hashmap"
 )
 
 // Namespace is the metric namespace of this collector
@@ -36,7 +35,7 @@ var (
 type TailCollector struct {
 	cfg     *config.Config                   // Configuration
 	metrics map[string]*prometheus.MetricVec // map of initialized metrics
-	mmtx    *sync.Mutex                       // Metric initialization lock for map writes
+	mmtx    *sync.Mutex                      // Metric initialization lock for map writes
 
 	regexCh []chan string // list of regex processors
 

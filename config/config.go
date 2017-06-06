@@ -88,13 +88,13 @@ func (this *MetricType) MarshalYAML() (interface{}, error) {
 }
 
 type MetricParser struct {
-	Name   string     `yaml:"name,omitempty"`
-	Type   MetricType `yaml:"type,omitempty"`
-	Help   string     `yaml:"help,omitempty"`
-	Regex  Regexp     `yaml:"regex,omitempty"`
-	Labels []LabelDef `yaml:"labels,omitempty"`
-	Value  ValueDef   `yaml:"value,omitempty"`
-	Timeout model.Duration	`yaml:"timeout,omitempty"`
+	Name    string         `yaml:"name,omitempty"`
+	Type    MetricType     `yaml:"type,omitempty"`
+	Help    string         `yaml:"help,omitempty"`
+	Regex   Regexp         `yaml:"regex,omitempty"`
+	Labels  []LabelDef     `yaml:"labels,omitempty"`
+	Value   ValueDef       `yaml:"value,omitempty"`
+	Timeout model.Duration `yaml:"timeout,omitempty"`
 }
 
 type MetricParserErrorNoHelp struct{}
