@@ -26,6 +26,7 @@
 //    package main
 //
 //    import (
+//    	"log"
 //    	"net/http"
 //
 //    	"github.com/prometheus/client_golang/prometheus"
@@ -69,7 +70,7 @@
 // Metrics
 //
 // The number of exported identifiers in this package might appear a bit
-// overwhelming. Hovever, in addition to the basic plumbing shown in the example
+// overwhelming. However, in addition to the basic plumbing shown in the example
 // above, you only need to understand the different metric types and their
 // vector versions for basic usage.
 //
