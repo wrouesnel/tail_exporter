@@ -6,6 +6,8 @@ import (
 	"io/ioutil"
 	"strconv"
 	"strings"
+
+	"github.com/prometheus/common/model"
 )
 
 // Load parses the YAML input s into a Config.
@@ -92,6 +94,7 @@ type MetricParser struct {
 	Regex  Regexp     `yaml:"regex,omitempty"`
 	Labels []LabelDef `yaml:"labels,omitempty"`
 	Value  ValueDef   `yaml:"value,omitempty"`
+	Timeout model.Duration	`yaml:"timeout,omitempty"`
 }
 
 type MetricParserErrorNoHelp struct{}

@@ -1,8 +1,9 @@
 language: go
 go:
-- 1.7
-
-addons:
-  apt:
-    packages:
-    - libpcre3-dev
+- '1.8'
+cache:
+  directories:
+  - tools/bin
+script:
+- CONCURRENT_LINTERS=1 LINTER_DEADLINE=180s make all
+- tools/bin/goveralls -coverprofile=cover.out -service=travis-ci"

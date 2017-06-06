@@ -19,6 +19,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"github.com/cornelk/hashmap"
 )
 
 // Namespace is the metric namespace of this collector

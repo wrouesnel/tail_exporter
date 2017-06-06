@@ -30,4 +30,5 @@ metric_configs:
   - name: result
     value: $2
   value: increment
+  timeout: 15m
 ```
