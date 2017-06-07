@@ -38,11 +38,47 @@ type Counter interface {
 	Add(float64)
 }
 
+// SettableCounter is a regular Counter metric that allows its value to be
+// set to arbitrary values, or reset to 0 on demand. Be warned: resetting or
+// decrementing a counter implies to Prometheus that the value wrapped around
+// or was reset (i.e. by a process restart) and should only ever be used when
+// proxying or representing values known to be counters which are exposed by
+// other systems.
+type SettableCounter interface {
+	Metric
+	Collector
+
+	// Inc increments the counter by 1. Use Add to increment it by arbitrary
+	// non-negative values.
+	Inc()
+	// Add adds the given value to the counter. It panics if the value is <
+	// 0.
+	Add(float64)
+	// Set sets the counter to the given value. If the value is less then the
+	// current value of the counter, it will imply a reset to Prometheus.
+	Set(float64)
+	// Reset sets the counter back to zero.
+	Reset()
+}
+
 // CounterOpts is an alias for Opts. See there for doc comments.
 type CounterOpts Opts
 
 // NewCounter creates a new Counter based on the provided CounterOpts.
 func NewCounter(opts CounterOpts) Counter {
+	desc := NewDesc(
+		BuildFQName(opts.Namespace, opts.Subsystem, opts.Name),
+		opts.Help,
+		nil,
+		opts.ConstLabels,
+	)
+	result := &counter{value: value{desc: desc, valType: CounterValue, labelPairs: desc.constLabelPairs}}
+	result.init(result) // Init self-collection.
+	return result
+}
+
+// NewCounter creates a new Counter based on the provided CounterOpts.
+func NewSettableCounter(opts CounterOpts) SettableCounter {
 	desc := NewDesc(
 		BuildFQName(opts.Namespace, opts.Subsystem, opts.Name),
 		opts.Help,
@@ -63,6 +99,17 @@ func (c *counter) Add(v float64) {
 		panic(errors.New("counter cannot decrease in value"))
 	}
 	c.value.Add(v)
+}
+
+func (c *counter) Set(v float64) {
+	if v < 0 {
+		panic(errors.New("counter cannot be less then zero"))
+	}
+	c.value.Set(v)
+}
+
+func (c *counter) Reset() {
+	c.value.Set(0)
 }
 
 // CounterVec is a Collector that bundles a set of Counters that all share the
