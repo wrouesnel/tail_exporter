@@ -124,7 +124,7 @@ func (c *TailCollector) initalizeMetric(cfg *config.MetricParser) *prometheus.Me
 
 	switch cfg.Type {
 	case config.METRIC_COUNTER:
-		metricVec = prometheus.NewCounterVec(
+		metricVec = prometheus.NewSettableCounter(
 			prometheus.CounterOpts{
 				Name: cfg.Name,
 				Help: cfg.Help,
@@ -263,7 +263,7 @@ processloop:
 			switch t := metric.(type) {
 			case prometheus.Gauge:
 				t.Set(val)
-			case prometheus.Counter:
+			case prometheus.SettableCounter:
 				t.Set(val)
 			case prometheus.Untyped:
 				t.Set(val)
@@ -275,7 +275,7 @@ processloop:
 			switch t := metric.(type) {
 			case prometheus.Gauge:
 				t.Inc()
-			case prometheus.Counter:
+			case prometheus.SettableCounter:
 				t.Inc()
 			case prometheus.Untyped:
 				t.Inc()
@@ -287,7 +287,7 @@ processloop:
 			switch t := metric.(type) {
 			case prometheus.Gauge:
 				t.Dec()
-			case prometheus.Counter:
+			case prometheus.SettableCounter:
 				// Subtract means reset for a counter
 				t.Reset()
 			case prometheus.Untyped:
