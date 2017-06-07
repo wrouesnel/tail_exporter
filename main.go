@@ -19,6 +19,9 @@ import (
 	"os"
 	"strings"
 	"sync"
+
+	"github.com/cornelk/hashmap"
+	"github.com/prometheus/prometheus/storage/metric"
 )
 
 // Namespace is the metric namespace of this collector
@@ -33,22 +36,22 @@ var (
 
 // TailCollector implements the main collector process.
 type TailCollector struct {
-	cfg     *config.Config                   // Configuration
-	metrics map[string]*prometheus.MetricVec // map of initialized metrics
-	mmtx    *sync.Mutex                      // Metric initialization lock for map writes
+	cfg     *config.Config                  // Configuration
+	metrics *hashmap.HashMap 				// map of currently stored metrics
+	mmtx    *sync.Mutex                     // Metric initialization lock for map writes
 
 	regexCh []chan string // list of regex processors
 
 	numMetrics    prometheus.Gauge   // our own metric + lets initialization succeed
 	ingestedLines prometheus.Counter // number of lines we've ingested
-	//rejectedLines *prometheus.CounterVec // number of rejected values
-	//timedoutMetrics prometheus.Counter // number of metrics which have been dropped due to internal timeouts
+	rejectedLines *prometheus.CounterVec // number of rejected values
+	timedoutMetrics prometheus.Counter // number of metrics which have been dropped due to internal timeouts
 }
 
 func newTailCollector(cfg *config.Config) *TailCollector {
 	c := TailCollector{}
 	c.cfg = cfg
-	c.metrics = make(map[string]*prometheus.MetricVec)
+	c.metrics = hashmap.New()
 	c.mmtx = new(sync.Mutex)
 	c.regexCh = make([]chan string, len(cfg.MetricConfigs))
 
@@ -68,6 +71,14 @@ func newTailCollector(cfg *config.Config) *TailCollector {
 		},
 	)
 
+	c.numMetrics = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Namespace: Namespace,
+			Name:      "hashmap_size",
+			Help:      "size of the internal hashmap for persisting metric values",
+		},
+	)
+
 	c.ingestedLines = prometheus.NewCounter(
 		prometheus.CounterOpts{
 			Namespace: Namespace,
@@ -76,14 +87,22 @@ func newTailCollector(cfg *config.Config) *TailCollector {
 		},
 	)
 
-	//	c.rejectedLines = prometheus.NewCounterVec(
-	//		prometheus.CounterOpts{
-	//			Namespace: Namespace,
-	//			Name: "rejected_lines_total",
-	//			Help: "total number of lines rejected during parsing",
-	//		},
-	//		[]string{"reason"},
-	//	)
+	c.rejectedLines = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: Namespace,
+			Name: "rejected_lines_total",
+			Help: "total number of lines rejected during parsing",
+		},
+		[]string{"reason"},
+	)
+
+	c.ingestedLines = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Namespace: Namespace,
+			Name:      "timedout_metrics_total",
+			Help:      "total number of times metrics have been dropped due to no updates",
+		},
+	)
 
 	c.numMetrics.Set(float64(len(cfg.MetricConfigs)))
 	return &c
@@ -109,108 +128,43 @@ func (c *TailCollector) IngestLine(line string) {
 	}
 }
 
-func (c *TailCollector) initalizeMetric(cfg *config.MetricParser) *prometheus.MetricVec {
-	// Lock the map to writes (reads should be okay I think?)
-	c.mmtx.Lock()
-	defer c.mmtx.Unlock()
-
-	// Setup the label set
-	labelSet := make([]string, len(cfg.Labels))
-	for idx, v := range cfg.Labels {
-		labelSet[idx] = v.Name
-	}
-
-	var metricVec *prometheus.MetricVec
-
-	switch cfg.Type {
-	case config.METRIC_COUNTER:
-		metricVec = prometheus.NewSettableCounter(
-			prometheus.CounterOpts{
-				Name: cfg.Name,
-				Help: cfg.Help,
-			},
-			labelSet,
-		).MetricVec
-
-	case config.METRIC_GAUGE:
-		metricVec = prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Name: cfg.Name,
-				Help: cfg.Help,
-			},
-			labelSet,
-		).MetricVec
-	default:
-		metricVec = prometheus.NewUntypedVec(
-			prometheus.UntypedOpts{
-				Name: cfg.Name,
-				Help: cfg.Help,
-			},
-			labelSet,
-		).MetricVec
-	}
-	c.metrics[cfg.Name] = metricVec
-	return metricVec
-}
-
 // Processes lines through the regexes we have loaded
 func (c *TailCollector) lineProcessor(lineCh chan string, cfg config.MetricParser) {
-	// Run all regexes
-	labelValues := make([]string, len(cfg.Labels))
-
-processloop:
 	for line := range lineCh {
 		m := cfg.Regex.MatcherString(line, 0)
 		if !m.Matches() {
 			continue
 		}
-		// Got a match. See if we have this metric already.
-		var metricVec *prometheus.MetricVec
-		var ok bool
-		metricVec, ok = c.metrics[cfg.Name]
-		if !ok {
-			metricVec = c.initalizeMetric(&cfg)
+
+		// Parse the
+		labelPairs, lerr := ParseLabelPairsFromMatch(cfg.Labels, m)
+		if lerr != nil {
+			log.With("line", line).Warnln("Dropping line due to unparseable labels")
+			c.rejectedLines.WithLabelValues("unparseable labels").Inc()
+			continue
 		}
 
-		// Calculate label values
-		for idx, v := range cfg.Labels {
-			switch v.Value.FieldType {
-			case config.LVALUE_LITERAL:
-				labelValues[idx] = v.Value.Literal
-			case config.LVALUE_CAPTUREGROUP_NAMED:
-				if !m.NamedPresent(v.Value.CaptureGroupName) {
-					if v.HasDefault {
-						labelValues[idx] = v.Default
-					} else {
-						log.With("name", cfg.Name).
-							With("group_name", v.Value.CaptureGroupName).
-							With("line", line).
-							Warnln("Dropping unconvertible capture value")
-						continue processloop
-					}
-				}
-				labelValues[idx] = m.NamedString(v.Value.CaptureGroupName)
-			case config.LVALUE_CAPTUREGROUP:
-				if v.HasDefault && (m.GroupString(v.Value.CaptureGroup) == "") {
-					labelValues[idx] = v.Default
-				} else {
-					labelValues[idx] = m.GroupString(v.Value.CaptureGroup)
-				}
-			default:
-				log.Warnln("Got no recognized type - assuming literal")
-				labelValues[idx] = v.Value.Literal
-			}
+		// Convert the parsed line into the matching metric definition
+		metric, merr := newMetricValue(cfg.Name, cfg.Help, cfg.Type, labelPairs...)
+		if merr != nil {
+			log.With("line", line).Errorln("Dropping line due to invalue metric value type specified")
+			c.rejectedLines.WithLabelValues("configuration error").Inc()
 		}
 
-		// Get the metric we will adjust
-		metric := metricVec.WithLabelValues(labelValues...)
+		value = ParseValueFromMatch
+
+		switch cfg.Value.FieldType {
+		case config.VALUE_LITERAL:
+		case config.VALUE_CAPTUREGROUP:
+		case config.VALUE_CAPTUREGROUP_NAMED:
+		}
 
 		switch cfg.Value.FieldType {
 		case config.VALUE_LITERAL:
 			switch t := metric.(type) {
 			case prometheus.Gauge:
 				t.Set(cfg.Value.Literal)
-			case prometheus.Counter:
+			case prometheus.SettableCounter:
 				t.Set(cfg.Value.Literal)
 			case prometheus.Untyped:
 				t.Set(cfg.Value.Literal)
@@ -233,7 +187,7 @@ processloop:
 			switch t := metric.(type) {
 			case prometheus.Gauge:
 				t.Set(val)
-			case prometheus.Counter:
+			case prometheus.SettableCounter:
 				t.Add(val)
 			case prometheus.Untyped:
 				t.Set(val)

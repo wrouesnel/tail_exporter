@@ -117,7 +117,7 @@ func (this *MetricParser) UnmarshalYAML(unmarshal func(interface{}) error) error
 }
 
 type LabelDef struct {
-	Name  string        `yaml:"name,omitempty"`
+	Name  LabelValueDef `yaml:"name,omitempty"`
 	Value LabelValueDef `yaml:"value,omitempty"`
 
 	// Optional parameters get loaded into this map.
@@ -208,11 +208,22 @@ func (this *LabelValueDef) MarshalYAML() (interface{}, error) {
 type ValueType int
 
 const (
+	// Assign the specified value directly to the metric
 	VALUE_LITERAL            ValueType = iota
+	// Assign the value from the capture group to the metric
 	VALUE_CAPTUREGROUP       ValueType = iota
+	// Assign the value frm the given named capture group to the metric
 	VALUE_CAPTUREGROUP_NAMED ValueType = iota
+	// On every match increment the current metric value
 	VALUE_INC                ValueType = iota
-	VALUE_SUB                ValueType = iota
+	// On every match decrement the current metric value.
+	// (counters will simply reset to zero)
+	VALUE_DEC                ValueType = iota
+	// On every match increment the current metric by the received value
+	VALUE_ADD				 ValueType = iota
+	// On every match decrement the current metric by the received value
+	// (counters will be reset to zero)
+	VALUE_SUB				 ValueType = iota
 )
 
 // ValueDef is the definition for numeric values which will be assigned to metrics
@@ -248,6 +259,10 @@ func (this *ValueDef) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	} else if s == "increment" {
 		this.FieldType = VALUE_INC
 	} else if s == "decrement" {
+		this.FieldType = VALUE_DEC
+	} else if s == "add" {
+		this.FieldType = VALUE_ADD
+	} else if s == "subtract" {
 		this.FieldType = VALUE_SUB
 	} else {
 		this.FieldType = VALUE_LITERAL
