@@ -48,9 +48,9 @@ type Config struct {
 type MetricType int
 
 const (
-	METRIC_UNTYPED MetricType = iota
-	METRIC_GAUGE   MetricType = iota
-	METRIC_COUNTER MetricType = iota
+	MetricUntyped MetricType = iota
+	MetricGauge   MetricType = iota
+	MetricCounter MetricType = iota
 )
 
 type ErrorInvalidMetricType struct{}
@@ -67,20 +67,20 @@ func (this *MetricType) UnmarshalYAML(unmarshal func(interface{}) error) error {
 
 	switch s {
 	case "gauge":
-		*this = METRIC_GAUGE
+		*this = MetricGauge
 	case "counter":
-		*this = METRIC_COUNTER
+		*this = MetricCounter
 	default:
-		*this = METRIC_UNTYPED
+		*this = MetricUntyped
 	}
 	return nil
 }
 
 func (this *MetricType) MarshalYAML() (interface{}, error) {
 	switch *this {
-	case METRIC_COUNTER:
+	case MetricCounter:
 		return "counter", nil
-	case METRIC_GAUGE:
+	case MetricGauge:
 		return "gauge", nil
 	default:
 		return "invalid metric", nil
@@ -204,31 +204,30 @@ func (this *LabelValueDef) MarshalYAML() (interface{}, error) {
 	}
 }
 
-// Value definitions for label and value fields
-type ValueType int
+// ValueSourceType specifies the sourcex
+type ValueOpType int
+
+const (
+	ValueOpAdd ValueOpType = iota
+	ValueOpSubtract
+	ValueOpEquals
+)
+
+type ValueSourceType int
 
 const (
 	// Assign the specified value directly to the metric
-	VALUE_LITERAL            ValueType = iota
+	ValueSourceLiteral ValueSourceType = iota
 	// Assign the value from the capture group to the metric
-	VALUE_CAPTUREGROUP       ValueType = iota
+	ValueSourceCaptureGroup
 	// Assign the value frm the given named capture group to the metric
-	VALUE_CAPTUREGROUP_NAMED ValueType = iota
-	// On every match increment the current metric value
-	VALUE_INC                ValueType = iota
-	// On every match decrement the current metric value.
-	// (counters will simply reset to zero)
-	VALUE_DEC                ValueType = iota
-	// On every match increment the current metric by the received value
-	VALUE_ADD				 ValueType = iota
-	// On every match decrement the current metric by the received value
-	// (counters will be reset to zero)
-	VALUE_SUB				 ValueType = iota
+	ValueSourceNamedCaptureGroup
 )
 
 // ValueDef is the definition for numeric values which will be assigned to metrics
 type ValueDef struct {
-	FieldType        ValueType
+	ValueOp          ValueOpType
+	ValueSource      ValueSourceType
 	Literal          float64
 	CaptureGroup     int
 	CaptureGroupName string
@@ -241,53 +240,70 @@ func (this *ValueDef) UnmarshalYAML(unmarshal func(interface{}) error) error {
 		return err
 	}
 
-	if strings.HasPrefix(s, "$") {
-		// If we can match a number, assume a numbered group. If we can't, then
-		// assume we are refering to a capture group name. If the name is invalid
-		// then we'll fail to match but there's no easy way cross-validate with the
-		// PCRE module just yet.
-		str := strings.Trim(s, "$")
-		val, err := strconv.ParseInt(str, 10, 32)
-		if err != nil {
-			this.FieldType = VALUE_CAPTUREGROUP_NAMED
-			this.CaptureGroupName = str
+	// Determine type of operation
+	switch s[0] {
+	case "+":
+		this.ValueOp = ValueOpAdd
+	case "-":
+		this.ValueOp = ValueOpSubtract
+	case "=":
+		this.ValueOp = ValueOpEquals
+	default:
+		return fmt.Errorf("Value specification must start with one of +,-,=")
+	}
+
+	// Is this a capture group specification?
+	if s[1] == '$' {
+		// Capture group specification
+		if val, err := strconv.ParseInt(string(s[2:]), 10, 64); err != nil {
+			// Assume is named capture group
+			this.ValueSource = ValueSourceNamedCaptureGroup
+			this.CaptureGroupName = string(s[2:])
 		} else {
-			this.FieldType = VALUE_CAPTUREGROUP
+			// Got a number - must be a numbered capture group
+			this.ValueSource = ValueSourceCaptureGroup
 			this.CaptureGroup = int(val)
 		}
-
-	} else if s == "increment" {
-		this.FieldType = VALUE_INC
-	} else if s == "decrement" {
-		this.FieldType = VALUE_DEC
-	} else if s == "add" {
-		this.FieldType = VALUE_ADD
-	} else if s == "subtract" {
-		this.FieldType = VALUE_SUB
 	} else {
-		this.FieldType = VALUE_LITERAL
-
-		val, err := strconv.ParseFloat(s, 64)
+		// Literal specification
+		this.ValueSource = ValueSourceLiteral
+		val, err := strconv.ParseFloat(string(s[1:]), 64)
 		if err != nil {
-			return nil
+			return fmt.Errorf("Could not parse literal float: %v", err)
 		}
 		this.Literal = val
 	}
+
 	return nil
 }
 
 // MarshalYAML implements the yaml.Marshaler interface
 func (this *ValueDef) MarshalYAML() (interface{}, error) {
-	switch this.FieldType {
-	case VALUE_CAPTUREGROUP:
-		return fmt.Sprintf("$%d", this.CaptureGroup), nil
-	case VALUE_INC:
-		return "increment", nil
-	case VALUE_SUB:
-		return "decrement", nil
-	case VALUE_LITERAL:
-		return this.Literal, nil
+	var op, groupSpec, inputField string
+	switch this.ValueOp {
+	case ValueOpAdd:
+		op = "+"
+	case ValueOpSubtract:
+		op = "-"
+	case ValueOpEquals:
+		op = "="
 	default:
-		return this.Literal, nil
+		return nil, fmt.Errorf("unknown value source specification in config")
 	}
+
+	switch this.ValueSource {
+	case ValueSourceLiteral:
+		groupSpec = ""
+		inputField = fmt.Sprintf("%v", this.Literal)
+	case ValueSourceCaptureGroup:
+		groupSpec = "$"
+		inputField = fmt.Sprintf("%d", this.CaptureGroup)
+	case ValueSourceNamedCaptureGroup:
+		groupSpec = "$"
+		inputField = this.CaptureGroupName
+	default:
+		return nil, fmt.Errorf("unknown value source specification in config")
+	}
+
+	return fmt.Sprintf("%s%s%s", op, groupSpec, inputField), nil
 }

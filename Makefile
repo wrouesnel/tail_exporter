@@ -17,8 +17,11 @@ SHELL := env PATH=$(PATH) /bin/bash
 
 all: style lint test $(BINARY).x86_64
 
-$(BINARY).x86_64: $(GO_SRC)
-	CGO_ENABLED=0 go build -a -ldflags "-extldflags '-static' -X main.Version=$(VERSION)" -o $(BINARY).x86_64 .
+3rdparty:
+	$(MAKE) -C 3rdparty
+
+$(BINARY).x86_64: $(GO_SRC) 3rdparty
+	go build -a -ldflags "-extldflags '-static' -X main.Version=$(VERSION)" -o $(BINARY).x86_64 .
 
 style: tools
 	gometalinter --disable-all --enable=gofmt --vendor
@@ -41,4 +44,7 @@ test: tools
 tools:
 	$(MAKE) -C $(TOOLDIR)
 
-.PHONY: tools style fmt test all
+clean:
+	$(MAKE) -C 3rdparty clean
+
+.PHONY: tools style fmt test all 3rdparty clean

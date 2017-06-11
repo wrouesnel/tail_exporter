@@ -10,7 +10,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"strconv"
 
 	"github.com/hpcloud/tail"
 	"github.com/prometheus/client_golang/prometheus"
@@ -20,8 +19,9 @@ import (
 	"strings"
 	"sync"
 
+	"fmt"
 	"github.com/cornelk/hashmap"
-	"github.com/prometheus/prometheus/storage/metric"
+	"unsafe"
 )
 
 // Namespace is the metric namespace of this collector
@@ -36,16 +36,16 @@ var (
 
 // TailCollector implements the main collector process.
 type TailCollector struct {
-	cfg     *config.Config                  // Configuration
-	metrics *hashmap.HashMap 				// map of currently stored metrics
-	mmtx    *sync.Mutex                     // Metric initialization lock for map writes
+	cfg     *config.Config   // Configuration
+	metrics *hashmap.HashMap // map of currently stored metrics
+	mmtx    *sync.Mutex      // Metric initialization lock for map writes
 
 	regexCh []chan string // list of regex processors
 
-	numMetrics    prometheus.Gauge   // our own metric + lets initialization succeed
-	ingestedLines prometheus.Counter // number of lines we've ingested
-	rejectedLines *prometheus.CounterVec // number of rejected values
-	timedoutMetrics prometheus.Counter // number of metrics which have been dropped due to internal timeouts
+	numMetrics      prometheus.Gauge       // our own metric + lets initialization succeed
+	ingestedLines   prometheus.Counter     // number of lines we've ingested
+	rejectedLines   *prometheus.CounterVec // number of rejected values
+	timedoutMetrics prometheus.Counter     // number of metrics which have been dropped due to internal timeouts
 }
 
 func newTailCollector(cfg *config.Config) *TailCollector {
@@ -90,8 +90,8 @@ func newTailCollector(cfg *config.Config) *TailCollector {
 	c.rejectedLines = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Namespace: Namespace,
-			Name: "rejected_lines_total",
-			Help: "total number of lines rejected during parsing",
+			Name:      "rejected_lines_total",
+			Help:      "total number of lines rejected during parsing",
 		},
 		[]string{"reason"},
 	)
@@ -139,115 +139,46 @@ func (c *TailCollector) lineProcessor(lineCh chan string, cfg config.MetricParse
 		// Parse the
 		labelPairs, lerr := ParseLabelPairsFromMatch(cfg.Labels, m)
 		if lerr != nil {
-			log.With("line", line).Warnln("Dropping line due to unparseable labels")
-			c.rejectedLines.WithLabelValues("unparseable labels").Inc()
+			log.With("line", line).Warnln("Dropping line due to unparseable labels:", lerr)
+			c.rejectedLines.WithLabelValues(lerr.Error()).Inc()
 			continue
 		}
 
 		// Convert the parsed line into the matching metric definition
 		metric, merr := newMetricValue(cfg.Name, cfg.Help, cfg.Type, labelPairs...)
 		if merr != nil {
-			log.With("line", line).Errorln("Dropping line due to invalue metric value type specified")
-			c.rejectedLines.WithLabelValues("configuration error").Inc()
+			log.With("line", line).Errorln("Dropping line due to metric parsing error:", merr)
+			c.rejectedLines.WithLabelValues(merr.Error()).Inc()
 		}
 
-		value = ParseValueFromMatch
-
-		switch cfg.Value.FieldType {
-		case config.VALUE_LITERAL:
-		case config.VALUE_CAPTUREGROUP:
-		case config.VALUE_CAPTUREGROUP_NAMED:
+		// Get the value from the metric.
+		value, verr := ParseValueFromMatch(cfg.Value, m)
+		if verr != nil {
+			log.With("line", line).Errorln("Dropping line due value parsing error:", verr)
+			c.rejectedLines.WithLabelValues(verr.Error()).Inc()
 		}
 
-		switch cfg.Value.FieldType {
-		case config.VALUE_LITERAL:
-			switch t := metric.(type) {
-			case prometheus.Gauge:
-				t.Set(cfg.Value.Literal)
-			case prometheus.SettableCounter:
-				t.Set(cfg.Value.Literal)
-			case prometheus.Untyped:
-				t.Set(cfg.Value.Literal)
+		// Do a lookup in the hashtable to see if we have this metric
+		storedMetricPtr, found := c.metrics.GetStringKey(metric.GetHash())
+		if !found {
+			log.With("hash", metric.GetHash()).Debugln("Initializing new metric")
+			metric.Set(value)
+			c.metrics.Set(metric.GetHash(), unsafe.Pointer(&metric))
+		} else {
+			storedMetric := (*metricValue)(storedMetricPtr)
+			// Found a stored metric, do the correct operation for the config
+			// on its value
+			switch cfg.Value.ValueOp {
+			case config.ValueOpAdd:
+				storedMetric.Add(value)
+			case config.ValueOpSubtract:
+				storedMetric.Sub(value)
+			case config.ValueOpEquals:
+				storedMetric.Set(value)
 			default:
-				log.With("name", cfg.Name).Errorf("Unknown type for metric: %T", t)
-			}
-
-		case config.VALUE_CAPTUREGROUP:
-			valstr := m.GroupString(cfg.Value.CaptureGroup)
-			val, err := strconv.ParseFloat(valstr, 64)
-			if err != nil {
-				log.With("name", cfg.Name).
-					With("group_name", cfg.Value.CaptureGroup).
-					With("line", line).
-					With("value", valstr).
-					Warnln("Dropping line with unconvertible capture value")
-				continue
-			}
-
-			switch t := metric.(type) {
-			case prometheus.Gauge:
-				t.Set(val)
-			case prometheus.SettableCounter:
-				t.Add(val)
-			case prometheus.Untyped:
-				t.Set(val)
-			default:
-				log.With("name", cfg.Name).Errorf("Unknown type for metric: %T", t)
-			}
-
-		case config.VALUE_CAPTUREGROUP_NAMED:
-			if !m.NamedPresent(cfg.Value.CaptureGroupName) {
-				log.With("name", cfg.Name).
-					With("group_name", cfg.Value.CaptureGroup).
-					With("line", line).
-					Warnln("Dropping line with missing capture value")
-				continue
-			}
-			valstr := m.NamedString(cfg.Value.CaptureGroupName)
-			val, err := strconv.ParseFloat(valstr, 64)
-			if err != nil {
-				log.With("name", cfg.Name).
-					With("group_name", cfg.Value.CaptureGroupName).
-					With("line", line).
-					With("value", valstr).
-					Warnln("Dropping line with unconvertible capture value")
-				continue
-			}
-
-			switch t := metric.(type) {
-			case prometheus.Gauge:
-				t.Set(val)
-			case prometheus.SettableCounter:
-				t.Set(val)
-			case prometheus.Untyped:
-				t.Set(val)
-			default:
-				log.With("name", cfg.Name).Errorf("Unknown type for metric: %T", t)
-			}
-
-		case config.VALUE_INC:
-			switch t := metric.(type) {
-			case prometheus.Gauge:
-				t.Inc()
-			case prometheus.SettableCounter:
-				t.Inc()
-			case prometheus.Untyped:
-				t.Inc()
-			default:
-				log.With("name", cfg.Name).Errorf("Unknown type for metric: %T", t)
-			}
-
-		case config.VALUE_SUB:
-			switch t := metric.(type) {
-			case prometheus.Gauge:
-				t.Dec()
-			case prometheus.SettableCounter:
-				// Subtract means reset for a counter
-				t.Reset()
-			case prometheus.Untyped:
-				t.Dec()
-			default:
-				log.With("name", cfg.Name).Errorf("Unknown type for metric: %T", t)
+				// panic because we should *never* get here and testing
+				// should catch it.
+				panic(fmt.Sprintf("unknown value source specification in config: %v", cfg.Value.ValueOp))
 			}
 		}
 	}
@@ -257,10 +188,11 @@ func (c *TailCollector) lineProcessor(lineCh chan string, cfg config.MetricParse
 func (c *TailCollector) Collect(ch chan<- prometheus.Metric) {
 	c.numMetrics.Collect(ch)
 	c.ingestedLines.Collect(ch)
-	//c.rejectedLines.Collect(ch)
+	c.rejectedLines.Collect(ch)
 
-	for _, v := range c.metrics {
-		v.Collect(ch)
+	for kv := range c.metrics.Iter() {
+		metric := (*metricValue)(kv.Value)
+		metric.Collect(ch)
 	}
 }
 
@@ -268,10 +200,11 @@ func (c *TailCollector) Collect(ch chan<- prometheus.Metric) {
 func (c *TailCollector) Describe(ch chan<- *prometheus.Desc) {
 	c.numMetrics.Describe(ch)
 	c.ingestedLines.Describe(ch)
-	//c.rejectedLines.Describe(ch)
+	c.rejectedLines.Describe(ch)
 
-	for _, v := range c.metrics {
-		v.Describe(ch)
+	for kv := range c.metrics.Iter() {
+		metric := (*metricValue)(kv.Value)
+		metric.Describe(ch)
 	}
 }
 

@@ -5,7 +5,7 @@ metric_configs:
   regex: '^METRICS: uuid=(\S+) result=(\S+)'
   labels:
   - name: uuid
-    value: $1
+    value: =$1
   - name: result
-    value: $2
-  value: increment
+    value: =$2
+  value: +1
