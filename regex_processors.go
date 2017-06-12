@@ -12,14 +12,14 @@ import (
 
 func ParseLabelKey(def config.LabelValueDef, m *pcre.Matcher) (string, error) {
 	switch def.FieldType {
-	case config.LVALUE_LITERAL:
+	case config.LabelValueLiteral:
 		return def.Literal, nil
-	case config.LVALUE_CAPTUREGROUP_NAMED:
+	case config.LabelValueCaptureGroupNamed:
 		if !m.NamedPresent(def.CaptureGroupName) {
 			return "", fmt.Errorf("unconvertible capture value")
 		}
 		return m.NamedString(def.CaptureGroupName), nil
-	case config.LVALUE_CAPTUREGROUP:
+	case config.LabelValueCaptureGroup:
 		return m.GroupString(def.CaptureGroup), nil
 	default:
 		return "", fmt.Errorf("unknown conversion type: %s", def.FieldType)
@@ -33,7 +33,7 @@ func ParseLabelPairsFromMatch(def []config.LabelDef, m *pcre.Matcher) (prometheu
 	labels := make(prometheus.Labels, len(def))
 
 	// Calculate label names from the rule
-	for idx, v := range def {
+	for _, v := range def {
 		name, nerr := ParseLabelKey(v.Name, m)
 		if nerr != nil {
 			return nil, fmt.Errorf("error parsing LabelDef for name")

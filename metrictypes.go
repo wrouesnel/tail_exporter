@@ -3,33 +3,32 @@ package main
 import (
 	"crypto/sha256"
 	"fmt"
-	"github.com/prometheus/client_golang/prometheus"
-	dto "github.com/prometheus/client_model/go"
-	"github.com/wrouesnel/tail_exporter/config"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/wrouesnel/tail_exporter/config"
 )
 
 // metricValue stores the typed value of a metric being collected by the
 // exporter.
 type metricValue struct {
-	fqName     string
-	help       string
-	labelPairs []*dto.LabelPair // Sorted label-pairs
-	valueType  prometheus.ValueType
-
-	hash string // SHA256 hash representing a structured interpretation of label values
-
-	// Desc is the prometheus description of this metric value.
+	// desc is the prometheus description of this metric value.
 	desc *prometheus.Desc
-
-	value       float64
+	// hash representing a structured interpretation of label values
+	hash string
+	// valueType is the prometheus TYPE of the generated metric
+	valueType prometheus.ValueType
+	// value is the current value of the internal metric
+	value float64
+	// metric timeout for GC purposes
+	timeout time.Duration
+	// stores the time of the last update for GC purposes
 	lastUpdated time.Time
 }
 
-func newMetricValue(fqName string, help string, valueType config.MetricType, labelPairs prometheus.Labels) (*metricValue, error) {
+func newMetricValue(fqName string, help string, valueType config.MetricType, timeout time.Duration, labelPairs prometheus.Labels) (*metricValue, error) {
 	metric := &metricValue{}
 
-	//sort.Sort(prometheus.LabelPairSorter{metric.labelPairs})
 	switch valueType {
 	case config.MetricUntyped:
 		metric.valueType = prometheus.UntypedValue
@@ -41,21 +40,27 @@ func newMetricValue(fqName string, help string, valueType config.MetricType, lab
 		return nil, fmt.Errorf("unknown metric value type: %s", valueType)
 	}
 
-	metric.desc = prometheus.NewDesc(fqName, help, nil, labelPairs)
+	metric.desc = prometheus.NewDesc(fqName, help, []string{}, labelPairs)
 
 	// Calculate the hash of the new metric from it's labels
 	h := sha256.New()
 	h.Write([]byte(metric.desc.String()))
 	metric.hash = string(h.Sum(nil))
+
+	metric.timeout = timeout
+
 	return metric, nil
 }
 
-func (mv *metricValue) Describe(chan<- *prometheus.Desc) {
-
+func (mv *metricValue) Describe(ch chan<- *prometheus.Desc) {
+	ch <- mv.desc
 }
 
-func (mv *metricValue) Collect(chan<- prometheus.Metric) {
-
+func (mv *metricValue) Collect(ch chan<- prometheus.Metric) {
+	// Metrics are dynamically generated when needed, because value updates
+	// are common but scrapes are infrequent.
+	// TODO: implement prometheus.Metric directly.
+	ch <- prometheus.MustNewConstMetric(mv.desc, mv.valueType, mv.value)
 }
 
 // GetHash gets a cryptographically strong hash which describes the metric
@@ -73,6 +78,7 @@ func (mv *metricValue) Get() float64 {
 func (mv *metricValue) Set(v float64) {
 	// TODO: prevent counter from going < 0?
 	mv.value = v
+	mv.lastUpdated = time.Now()
 }
 
 // Sub decreases the stored value by v
@@ -82,6 +88,7 @@ func (mv *metricValue) Sub(v float64) {
 	} else {
 		mv.value -= v
 	}
+	mv.lastUpdated = time.Now()
 }
 
 // Add increases the stored value by v
@@ -91,4 +98,14 @@ func (mv *metricValue) Add(v float64) {
 	if mv.value < 0 && mv.valueType == prometheus.CounterValue {
 		mv.value = 0
 	}
+	mv.lastUpdated = time.Now()
+}
+
+// IsStale reports if the metric has exceeded its timeout, provided its timeout
+// is greater then 0.
+func (mv *metricValue) IsStale() bool {
+	if mv.timeout > 0 {
+		return time.Since(mv.lastUpdated) > mv.timeout
+	}
+	return false
 }

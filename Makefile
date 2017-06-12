@@ -20,8 +20,13 @@ all: style lint test $(BINARY).x86_64
 3rdparty:
 	$(MAKE) -C 3rdparty
 
+$(BINARY).x86_64: export CGO_CFLAGS=-I $(shell pwd)/3rdparty/pcre-8.40
+$(BINARY).x86_64: export CGO_LDFLAGS=-L $(shell pwd)/3rdparty/pcre-8.40
 $(BINARY).x86_64: $(GO_SRC) 3rdparty
+   
 	go build -a -ldflags "-extldflags '-static' -X main.Version=$(VERSION)" -o $(BINARY).x86_64 .
+
+binary: $(BINARY).x86_64
 
 style: tools
 	gometalinter --disable-all --enable=gofmt --vendor
@@ -47,4 +52,4 @@ tools:
 clean:
 	$(MAKE) -C 3rdparty clean
 
-.PHONY: tools style fmt test all 3rdparty clean
+.PHONY: tools style fmt test all 3rdparty clean binary

@@ -153,9 +153,9 @@ func (this *LabelDef) MarshalYAML() (interface{}, error) {
 type LabelValueType int
 
 const (
-	LVALUE_LITERAL            LabelValueType = iota
-	LVALUE_CAPTUREGROUP       LabelValueType = iota
-	LVALUE_CAPTUREGROUP_NAMED LabelValueType = iota
+	LabelValueLiteral           LabelValueType = iota
+	LabelValueCaptureGroup      LabelValueType = iota
+	LabelValueCaptureGroupNamed LabelValueType = iota
 )
 
 // Defines a type which sets ascii label values
@@ -181,14 +181,14 @@ func (this *LabelValueDef) UnmarshalYAML(unmarshal func(interface{}) error) erro
 		str := strings.Trim(s, "$")
 		val, err := strconv.ParseInt(str, 10, 32)
 		if err != nil {
-			this.FieldType = LVALUE_CAPTUREGROUP_NAMED
+			this.FieldType = LabelValueCaptureGroupNamed
 			this.CaptureGroupName = str
 		} else {
-			this.FieldType = LVALUE_CAPTUREGROUP
+			this.FieldType = LabelValueCaptureGroup
 			this.CaptureGroup = int(val)
 		}
 	} else {
-		this.FieldType = LVALUE_LITERAL
+		this.FieldType = LabelValueLiteral
 		this.Literal = s
 	}
 	return nil
@@ -197,7 +197,7 @@ func (this *LabelValueDef) UnmarshalYAML(unmarshal func(interface{}) error) erro
 // MarshalYAML implements the yaml.Marshaler interface.
 func (this *LabelValueDef) MarshalYAML() (interface{}, error) {
 	switch this.FieldType {
-	case LVALUE_CAPTUREGROUP:
+	case LabelValueCaptureGroup:
 		return fmt.Sprintf("$%d", this.CaptureGroup), nil
 	default:
 		return this.Literal, nil
@@ -242,11 +242,11 @@ func (this *ValueDef) UnmarshalYAML(unmarshal func(interface{}) error) error {
 
 	// Determine type of operation
 	switch s[0] {
-	case "+":
+	case '+':
 		this.ValueOp = ValueOpAdd
-	case "-":
+	case '-':
 		this.ValueOp = ValueOpSubtract
-	case "=":
+	case '=':
 		this.ValueOp = ValueOpEquals
 	default:
 		return fmt.Errorf("Value specification must start with one of +,-,=")

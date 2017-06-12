@@ -17,11 +17,11 @@ import (
 	"github.com/wrouesnel/tail_exporter/config"
 	"os"
 	"strings"
-	"sync"
 
 	"fmt"
 	"github.com/cornelk/hashmap"
 	"unsafe"
+	"time"
 )
 
 // Namespace is the metric namespace of this collector
@@ -38,7 +38,6 @@ var (
 type TailCollector struct {
 	cfg     *config.Config   // Configuration
 	metrics *hashmap.HashMap // map of currently stored metrics
-	mmtx    *sync.Mutex      // Metric initialization lock for map writes
 
 	regexCh []chan string // list of regex processors
 
@@ -52,7 +51,6 @@ func newTailCollector(cfg *config.Config) *TailCollector {
 	c := TailCollector{}
 	c.cfg = cfg
 	c.metrics = hashmap.New()
-	c.mmtx = new(sync.Mutex)
 	c.regexCh = make([]chan string, len(cfg.MetricConfigs))
 
 	// Initialize regex processors
@@ -96,7 +94,7 @@ func newTailCollector(cfg *config.Config) *TailCollector {
 		[]string{"reason"},
 	)
 
-	c.ingestedLines = prometheus.NewCounter(
+	c.timedoutMetrics = prometheus.NewCounter(
 		prometheus.CounterOpts{
 			Namespace: Namespace,
 			Name:      "timedout_metrics_total",
@@ -145,7 +143,7 @@ func (c *TailCollector) lineProcessor(lineCh chan string, cfg config.MetricParse
 		}
 
 		// Convert the parsed line into the matching metric definition
-		metric, merr := newMetricValue(cfg.Name, cfg.Help, cfg.Type, labelPairs...)
+		metric, merr := newMetricValue(cfg.Name, cfg.Help, cfg.Type, time.Duration(cfg.Timeout), labelPairs)
 		if merr != nil {
 			log.With("line", line).Errorln("Dropping line due to metric parsing error:", merr)
 			c.rejectedLines.WithLabelValues(merr.Error()).Inc()
@@ -154,16 +152,16 @@ func (c *TailCollector) lineProcessor(lineCh chan string, cfg config.MetricParse
 		// Get the value from the metric.
 		value, verr := ParseValueFromMatch(cfg.Value, m)
 		if verr != nil {
-			log.With("line", line).Errorln("Dropping line due value parsing error:", verr)
+			log.With("line", line).Errorln("Dropping line due to value parsing error:", verr)
 			c.rejectedLines.WithLabelValues(verr.Error()).Inc()
 		}
 
 		// Do a lookup in the hashtable to see if we have this metric
 		storedMetricPtr, found := c.metrics.GetStringKey(metric.GetHash())
 		if !found {
-			log.With("hash", metric.GetHash()).Debugln("Initializing new metric")
+			log.Debugln("Initializing new metric")
 			metric.Set(value)
-			c.metrics.Set(metric.GetHash(), unsafe.Pointer(&metric))
+			c.metrics.Set(metric.GetHash(), unsafe.Pointer(metric))
 		} else {
 			storedMetric := (*metricValue)(storedMetricPtr)
 			// Found a stored metric, do the correct operation for the config
@@ -189,10 +187,18 @@ func (c *TailCollector) Collect(ch chan<- prometheus.Metric) {
 	c.numMetrics.Collect(ch)
 	c.ingestedLines.Collect(ch)
 	c.rejectedLines.Collect(ch)
+	c.timedoutMetrics.Collect(ch)
 
 	for kv := range c.metrics.Iter() {
 		metric := (*metricValue)(kv.Value)
 		metric.Collect(ch)
+		// Maybe GC the metric if it hasn't been updated for a while.
+		// Doing this after a collection biases us to reporting existent
+		// metrics at least once.
+		if metric.IsStale() {
+			log.Debugln("Expiring stale metric from cache.")
+			c.metrics.Del(kv.Key)
+		}
 	}
 }
 
@@ -201,6 +207,7 @@ func (c *TailCollector) Describe(ch chan<- *prometheus.Desc) {
 	c.numMetrics.Describe(ch)
 	c.ingestedLines.Describe(ch)
 	c.rejectedLines.Describe(ch)
+	c.timedoutMetrics.Describe(ch)
 
 	for kv := range c.metrics.Iter() {
 		metric := (*metricValue)(kv.Value)

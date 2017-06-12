@@ -32,3 +32,9 @@ metric_configs:
   value: increment
   timeout: 15m
 ```
+
+# TODO
+The lockfree hashmap used is non-deterministic on inserts being
+available before the next line is processed. We need to add an
+intermediate queue operation to wait of the hashmap to reflect an
+insert being complete.
