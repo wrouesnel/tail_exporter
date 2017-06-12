@@ -10,6 +10,7 @@ import (
 	"github.com/wrouesnel/tail_exporter/config"
 )
 
+// ParseLabelKey converts a regex match to prometheus label key string.
 func ParseLabelKey(def config.LabelValueDef, m *pcre.Matcher) (string, error) {
 	switch def.FieldType {
 	case config.LabelValueLiteral:
@@ -26,7 +27,7 @@ func ParseLabelKey(def config.LabelValueDef, m *pcre.Matcher) (string, error) {
 	}
 }
 
-// ParseLabelsFromMatch converts a regex match to a prometheus.Labels map. If
+// ParseLabelPairsFromMatch converts a regex match to a prometheus.Labels map. If
 // a label can't be parsed at all it will be dropped, and the entire metric
 // will be ignored for the given input match.
 func ParseLabelPairsFromMatch(def []config.LabelDef, m *pcre.Matcher) (prometheus.Labels, error) {

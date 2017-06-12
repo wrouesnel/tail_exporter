@@ -20,6 +20,7 @@ import (
 
 	"fmt"
 	"github.com/cornelk/hashmap"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"time"
 	"unsafe"
 )
@@ -45,6 +46,12 @@ type TailCollector struct {
 	ingestedLines   prometheus.Counter     // number of lines we've ingested
 	rejectedLines   *prometheus.CounterVec // number of rejected values
 	timedoutMetrics prometheus.Counter     // number of metrics which have been dropped due to internal timeouts
+}
+
+func logErr(err error) {
+	if err != nil {
+		log.Errorln(err)
+	}
 }
 
 func newTailCollector(cfg *config.Config) *TailCollector {
@@ -161,7 +168,7 @@ func (c *TailCollector) lineProcessor(lineCh chan string, cfg config.MetricParse
 		if !found {
 			log.Debugln("Initializing new metric")
 			metric.Set(value)
-			c.metrics.Set(metric.GetHash(), unsafe.Pointer(metric))
+			c.metrics.Set(metric.GetHash(), unsafe.Pointer(metric)) // nolint: gas
 		} else {
 			storedMetric := (*metricValue)(storedMetricPtr)
 			// Found a stored metric, do the correct operation for the config
@@ -217,7 +224,7 @@ func (c *TailCollector) Describe(ch chan<- *prometheus.Desc) {
 
 func main() {
 	flag.Parse()
-	http.Handle(*metricsPath, prometheus.Handler())
+	http.Handle(*metricsPath, promhttp.Handler())
 
 	cfg, err := config.LoadFile(*configFile)
 	if err != nil {
@@ -242,7 +249,7 @@ func main() {
 				}
 
 				t, err := tail.TailFile(filename, tail.Config{
-					Location: &tail.SeekInfo{0, os.SEEK_END},
+					Location: &tail.SeekInfo{0, io.SeekEnd},
 					ReOpen:   true,
 					Follow:   isPipe,
 				})
@@ -266,28 +273,28 @@ func main() {
 		}
 		go func() {
 			for {
-				conn, err := tcpSock.Accept()
-				if err != nil {
-					log.Errorf("Error accepting TCP connection: %s", err)
+				conn, aerr := tcpSock.Accept()
+				if aerr != nil {
+					log.Errorf("Error accepting TCP connection: %s", aerr)
 					continue
 				}
 				go func() {
-					defer conn.Close()
+					defer logErr(conn.Close())
 					c.processReader(conn)
 				}()
 			}
 		}()
 
-		udpAddress, err := net.ResolveUDPAddr("udp", *collectorAddress)
-		if err != nil {
+		udpAddress, uerr := net.ResolveUDPAddr("udp", *collectorAddress)
+		if uerr != nil {
 			log.Fatalf("Error resolving UDP address: %s", err)
 		}
-		udpSock, err := net.ListenUDP("udp", udpAddress)
-		if err != nil {
+		udpSock, lerr := net.ListenUDP("udp", udpAddress)
+		if lerr != nil {
 			log.Fatalf("Error listening to UDP address: %s", err)
 		}
 		go func() {
-			defer udpSock.Close()
+			defer logErr(udpSock.Close())
 			for {
 				buf := make([]byte, 65536)
 				chars, srcAddress, err := udpSock.ReadFromUDP(buf)
@@ -301,7 +308,7 @@ func main() {
 	}
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`<html>
+		_, werr := w.Write([]byte(`<html>
       <head><title>Tail Exporter</title></head>
       <body>
       <h1>TCP/UDP Tail Exporter</h1>
@@ -314,8 +321,9 @@ func main() {
 			`</pre>
       </body>
       </html>`))
+		logErr(werr)
 	})
 
 	log.Infof("Starting Server: %s", *listeningAddress)
-	http.ListenAndServe(*listeningAddress, nil)
+	logErr(http.ListenAndServe(*listeningAddress, nil))
 }

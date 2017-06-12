@@ -44,7 +44,9 @@ func newMetricValue(fqName string, help string, valueType config.MetricType, tim
 
 	// Calculate the hash of the new metric from it's labels
 	h := sha256.New()
-	h.Write([]byte(metric.desc.String()))
+	if _, err := h.Write([]byte(metric.desc.String())); err != nil {
+		return nil, fmt.Errorf("error while calculating metric hash: %v", err)
+	}
 	metric.hash = string(h.Sum(nil))
 
 	metric.timeout = timeout
