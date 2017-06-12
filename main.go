@@ -10,7 +10,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"strconv"
 
 	"github.com/hpcloud/tail"
 	"github.com/prometheus/client_golang/prometheus"
@@ -18,7 +17,12 @@ import (
 	"github.com/wrouesnel/tail_exporter/config"
 	"os"
 	"strings"
-	"sync"
+
+	"fmt"
+	"github.com/cornelk/hashmap"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"time"
+	"unsafe"
 )
 
 // Namespace is the metric namespace of this collector
@@ -33,23 +37,27 @@ var (
 
 // TailCollector implements the main collector process.
 type TailCollector struct {
-	cfg     *config.Config                   // Configuration
-	metrics map[string]*prometheus.MetricVec // map of initialized metrics
-	mmtx    *sync.Mutex                       // Metric initialization lock for map writes
+	cfg     *config.Config   // Configuration
+	metrics *hashmap.HashMap // map of currently stored metrics
 
 	regexCh []chan string // list of regex processors
 
-	numMetrics    prometheus.Gauge   // our own metric + lets initialization succeed
-	ingestedLines prometheus.Counter // number of lines we've ingested
-	//rejectedLines *prometheus.CounterVec // number of rejected values
-	//timedoutMetrics prometheus.Counter // number of metrics which have been dropped due to internal timeouts
+	numMetrics      prometheus.Gauge       // our own metric + lets initialization succeed
+	ingestedLines   prometheus.Counter     // number of lines we've ingested
+	rejectedLines   *prometheus.CounterVec // number of rejected values
+	timedoutMetrics prometheus.Counter     // number of metrics which have been dropped due to internal timeouts
+}
+
+func logErr(err error) {
+	if err != nil {
+		log.Errorln(err)
+	}
 }
 
 func newTailCollector(cfg *config.Config) *TailCollector {
 	c := TailCollector{}
 	c.cfg = cfg
-	c.metrics = make(map[string]*prometheus.MetricVec)
-	c.mmtx = new(sync.Mutex)
+	c.metrics = hashmap.New()
 	c.regexCh = make([]chan string, len(cfg.MetricConfigs))
 
 	// Initialize regex processors
@@ -68,6 +76,14 @@ func newTailCollector(cfg *config.Config) *TailCollector {
 		},
 	)
 
+	c.numMetrics = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Namespace: Namespace,
+			Name:      "hashmap_size",
+			Help:      "size of the internal hashmap for persisting metric values",
+		},
+	)
+
 	c.ingestedLines = prometheus.NewCounter(
 		prometheus.CounterOpts{
 			Namespace: Namespace,
@@ -76,14 +92,22 @@ func newTailCollector(cfg *config.Config) *TailCollector {
 		},
 	)
 
-	//	c.rejectedLines = prometheus.NewCounterVec(
-	//		prometheus.CounterOpts{
-	//			Namespace: Namespace,
-	//			Name: "rejected_lines_total",
-	//			Help: "total number of lines rejected during parsing",
-	//		},
-	//		[]string{"reason"},
-	//	)
+	c.rejectedLines = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: Namespace,
+			Name:      "rejected_lines_total",
+			Help:      "total number of lines rejected during parsing",
+		},
+		[]string{"reason"},
+	)
+
+	c.timedoutMetrics = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Namespace: Namespace,
+			Name:      "timedout_metrics_total",
+			Help:      "total number of times metrics have been dropped due to no updates",
+		},
+	)
 
 	c.numMetrics.Set(float64(len(cfg.MetricConfigs)))
 	return &c
@@ -109,191 +133,57 @@ func (c *TailCollector) IngestLine(line string) {
 	}
 }
 
-func (c *TailCollector) initalizeMetric(cfg *config.MetricParser) *prometheus.MetricVec {
-	// Lock the map to writes (reads should be okay I think?)
-	c.mmtx.Lock()
-	defer c.mmtx.Unlock()
-
-	// Setup the label set
-	labelSet := make([]string, len(cfg.Labels))
-	for idx, v := range cfg.Labels {
-		labelSet[idx] = v.Name
-	}
-
-	var metricVec *prometheus.MetricVec
-
-	switch cfg.Type {
-	case config.METRIC_COUNTER:
-		metricVec = prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Name: cfg.Name,
-				Help: cfg.Help,
-			},
-			labelSet,
-		).MetricVec
-
-	case config.METRIC_GAUGE:
-		metricVec = prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Name: cfg.Name,
-				Help: cfg.Help,
-			},
-			labelSet,
-		).MetricVec
-	default:
-		metricVec = prometheus.NewUntypedVec(
-			prometheus.UntypedOpts{
-				Name: cfg.Name,
-				Help: cfg.Help,
-			},
-			labelSet,
-		).MetricVec
-	}
-	c.metrics[cfg.Name] = metricVec
-	return metricVec
-}
-
 // Processes lines through the regexes we have loaded
 func (c *TailCollector) lineProcessor(lineCh chan string, cfg config.MetricParser) {
-	// Run all regexes
-	labelValues := make([]string, len(cfg.Labels))
-
-processloop:
 	for line := range lineCh {
 		m := cfg.Regex.MatcherString(line, 0)
 		if !m.Matches() {
 			continue
 		}
-		// Got a match. See if we have this metric already.
-		var metricVec *prometheus.MetricVec
-		var ok bool
-		metricVec, ok = c.metrics[cfg.Name]
-		if !ok {
-			metricVec = c.initalizeMetric(&cfg)
+
+		// Parse the
+		labelPairs, lerr := ParseLabelPairsFromMatch(cfg.Labels, m)
+		if lerr != nil {
+			log.With("line", line).Warnln("Dropping line due to unparseable labels:", lerr)
+			c.rejectedLines.WithLabelValues(lerr.Error()).Inc()
+			continue
 		}
 
-		// Calculate label values
-		for idx, v := range cfg.Labels {
-			switch v.Value.FieldType {
-			case config.LVALUE_LITERAL:
-				labelValues[idx] = v.Value.Literal
-			case config.LVALUE_CAPTUREGROUP_NAMED:
-				if !m.NamedPresent(v.Value.CaptureGroupName) {
-					if v.HasDefault {
-						labelValues[idx] = v.Default
-					} else {
-						log.With("name", cfg.Name).
-							With("group_name", v.Value.CaptureGroupName).
-							With("line", line).
-							Warnln("Dropping unconvertible capture value")
-						continue processloop
-					}
-				}
-				labelValues[idx] = m.NamedString(v.Value.CaptureGroupName)
-			case config.LVALUE_CAPTUREGROUP:
-				if v.HasDefault && (m.GroupString(v.Value.CaptureGroup) == "") {
-					labelValues[idx] = v.Default
-				} else {
-					labelValues[idx] = m.GroupString(v.Value.CaptureGroup)
-				}
-			default:
-				log.Warnln("Got no recognized type - assuming literal")
-				labelValues[idx] = v.Value.Literal
-			}
+		// Convert the parsed line into the matching metric definition
+		metric, merr := newMetricValue(cfg.Name, cfg.Help, cfg.Type, time.Duration(cfg.Timeout), labelPairs)
+		if merr != nil {
+			log.With("line", line).Errorln("Dropping line due to metric parsing error:", merr)
+			c.rejectedLines.WithLabelValues(merr.Error()).Inc()
 		}
 
-		// Get the metric we will adjust
-		metric := metricVec.WithLabelValues(labelValues...)
+		// Get the value from the metric.
+		value, verr := ParseValueFromMatch(cfg.Value, m)
+		if verr != nil {
+			log.With("line", line).Errorln("Dropping line due to value parsing error:", verr)
+			c.rejectedLines.WithLabelValues(verr.Error()).Inc()
+		}
 
-		switch cfg.Value.FieldType {
-		case config.VALUE_LITERAL:
-			switch t := metric.(type) {
-			case prometheus.Gauge:
-				t.Set(cfg.Value.Literal)
-			case prometheus.Counter:
-				t.Add(cfg.Value.Literal)
-			case prometheus.Untyped:
-				t.Set(cfg.Value.Literal)
+		// Do a lookup in the hashtable to see if we have this metric
+		storedMetricPtr, found := c.metrics.GetStringKey(metric.GetHash())
+		if !found {
+			log.Debugln("Initializing new metric")
+			metric.Set(value)
+			c.metrics.Set(metric.GetHash(), unsafe.Pointer(metric)) // nolint: gas
+		} else {
+			storedMetric := (*metricValue)(storedMetricPtr)
+			// Found a stored metric, do the correct operation for the config
+			// on its value
+			switch cfg.Value.ValueOp {
+			case config.ValueOpAdd:
+				storedMetric.Add(value)
+			case config.ValueOpSubtract:
+				storedMetric.Sub(value)
+			case config.ValueOpEquals:
+				storedMetric.Set(value)
 			default:
-				log.With("name", cfg.Name).Errorf("Unknown type for metric: %T", t)
-			}
-
-		case config.VALUE_CAPTUREGROUP:
-			valstr := m.GroupString(cfg.Value.CaptureGroup)
-			val, err := strconv.ParseFloat(valstr, 64)
-			if err != nil {
-				log.With("name", cfg.Name).
-					With("group_name", cfg.Value.CaptureGroup).
-					With("line", line).
-					With("value", valstr).
-					Warnln("Dropping line with unconvertible capture value")
-				continue
-			}
-
-			switch t := metric.(type) {
-			case prometheus.Gauge:
-				t.Set(val)
-			case prometheus.Counter:
-				t.Add(val)
-			case prometheus.Untyped:
-				t.Set(val)
-			default:
-				log.With("name", cfg.Name).Errorf("Unknown type for metric: %T", t)
-			}
-
-		case config.VALUE_CAPTUREGROUP_NAMED:
-			if !m.NamedPresent(cfg.Value.CaptureGroupName) {
-				log.With("name", cfg.Name).
-					With("group_name", cfg.Value.CaptureGroup).
-					With("line", line).
-					Warnln("Dropping line with missing capture value")
-				continue
-			}
-			valstr := m.NamedString(cfg.Value.CaptureGroupName)
-			val, err := strconv.ParseFloat(valstr, 64)
-			if err != nil {
-				log.With("name", cfg.Name).
-					With("group_name", cfg.Value.CaptureGroupName).
-					With("line", line).
-					With("value", valstr).
-					Warnln("Dropping line with unconvertible capture value")
-				continue
-			}
-
-			switch t := metric.(type) {
-			case prometheus.Gauge:
-				t.Set(val)
-			case prometheus.Counter:
-				t.Add(val)
-			case prometheus.Untyped:
-				t.Set(val)
-			default:
-				log.With("name", cfg.Name).Errorf("Unknown type for metric: %T", t)
-			}
-
-		case config.VALUE_INC:
-			switch t := metric.(type) {
-			case prometheus.Gauge:
-				t.Inc()
-			case prometheus.Counter:
-				t.Inc()
-			case prometheus.Untyped:
-				t.Inc()
-			default:
-				log.With("name", cfg.Name).Errorf("Unknown type for metric: %T", t)
-			}
-
-		case config.VALUE_SUB:
-			switch t := metric.(type) {
-			case prometheus.Gauge:
-				t.Dec()
-			case prometheus.Counter:
-				//t.(0) // Subtract means reset for a counter
-				// NoOp.
-			case prometheus.Untyped:
-				t.Dec()
-			default:
-				log.With("name", cfg.Name).Errorf("Unknown type for metric: %T", t)
+				// panic because we should *never* get here and testing
+				// should catch it.
+				panic(fmt.Sprintf("unknown value source specification in config: %v", cfg.Value.ValueOp))
 			}
 		}
 	}
@@ -303,10 +193,19 @@ processloop:
 func (c *TailCollector) Collect(ch chan<- prometheus.Metric) {
 	c.numMetrics.Collect(ch)
 	c.ingestedLines.Collect(ch)
-	//c.rejectedLines.Collect(ch)
+	c.rejectedLines.Collect(ch)
+	c.timedoutMetrics.Collect(ch)
 
-	for _, v := range c.metrics {
-		v.Collect(ch)
+	for kv := range c.metrics.Iter() {
+		metric := (*metricValue)(kv.Value)
+		metric.Collect(ch)
+		// Maybe GC the metric if it hasn't been updated for a while.
+		// Doing this after a collection biases us to reporting existent
+		// metrics at least once.
+		if metric.IsStale() {
+			log.Debugln("Expiring stale metric from cache.")
+			c.metrics.Del(kv.Key)
+		}
 	}
 }
 
@@ -314,16 +213,18 @@ func (c *TailCollector) Collect(ch chan<- prometheus.Metric) {
 func (c *TailCollector) Describe(ch chan<- *prometheus.Desc) {
 	c.numMetrics.Describe(ch)
 	c.ingestedLines.Describe(ch)
-	//c.rejectedLines.Describe(ch)
+	c.rejectedLines.Describe(ch)
+	c.timedoutMetrics.Describe(ch)
 
-	for _, v := range c.metrics {
-		v.Describe(ch)
+	for kv := range c.metrics.Iter() {
+		metric := (*metricValue)(kv.Value)
+		metric.Describe(ch)
 	}
 }
 
 func main() {
 	flag.Parse()
-	http.Handle(*metricsPath, prometheus.Handler())
+	http.Handle(*metricsPath, promhttp.Handler())
 
 	cfg, err := config.LoadFile(*configFile)
 	if err != nil {
@@ -348,7 +249,7 @@ func main() {
 				}
 
 				t, err := tail.TailFile(filename, tail.Config{
-					Location: &tail.SeekInfo{0, os.SEEK_END},
+					Location: &tail.SeekInfo{0, io.SeekEnd},
 					ReOpen:   true,
 					Follow:   isPipe,
 				})
@@ -372,28 +273,28 @@ func main() {
 		}
 		go func() {
 			for {
-				conn, err := tcpSock.Accept()
-				if err != nil {
-					log.Errorf("Error accepting TCP connection: %s", err)
+				conn, aerr := tcpSock.Accept()
+				if aerr != nil {
+					log.Errorf("Error accepting TCP connection: %s", aerr)
 					continue
 				}
 				go func() {
-					defer conn.Close()
+					defer logErr(conn.Close())
 					c.processReader(conn)
 				}()
 			}
 		}()
 
-		udpAddress, err := net.ResolveUDPAddr("udp", *collectorAddress)
-		if err != nil {
+		udpAddress, uerr := net.ResolveUDPAddr("udp", *collectorAddress)
+		if uerr != nil {
 			log.Fatalf("Error resolving UDP address: %s", err)
 		}
-		udpSock, err := net.ListenUDP("udp", udpAddress)
-		if err != nil {
+		udpSock, lerr := net.ListenUDP("udp", udpAddress)
+		if lerr != nil {
 			log.Fatalf("Error listening to UDP address: %s", err)
 		}
 		go func() {
-			defer udpSock.Close()
+			defer logErr(udpSock.Close())
 			for {
 				buf := make([]byte, 65536)
 				chars, srcAddress, err := udpSock.ReadFromUDP(buf)
@@ -407,7 +308,7 @@ func main() {
 	}
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`<html>
+		_, werr := w.Write([]byte(`<html>
       <head><title>Tail Exporter</title></head>
       <body>
       <h1>TCP/UDP Tail Exporter</h1>
@@ -420,8 +321,9 @@ func main() {
 			`</pre>
       </body>
       </html>`))
+		logErr(werr)
 	})
 
 	log.Infof("Starting Server: %s", *listeningAddress)
-	http.ListenAndServe(*listeningAddress, nil)
+	logErr(http.ListenAndServe(*listeningAddress, nil))
 }

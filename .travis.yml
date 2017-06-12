@@ -1,8 +1,18 @@
 language: go
 go:
-- 1.7
-
-addons:
-  apt:
-    packages:
-    - libpcre3-dev
+- '1.8'
+cache:
+  directories:
+  - tools/bin
+script:
+- CONCURRENT_LINTERS=1 LINTER_DEADLINE=180s make all
+- tools/bin/goveralls -coverprofile=cover.out -service=travis-ci
+deploy:
+  provider: releases
+  api_key:
+    secure: LGUCs86T9/VKm+WjCyZ3yOT/t5g8QOZcy6p/ITa+Qze/l6cZAJHfBNeNQRBTj0PNU+LZvFKXvoe9Xr5rXXsN78BoZZYcFwRMlYJ4Tf3rhQOqe/GJ7fldOI33b7vX9C3ksl11ScrworJ21riv9c4uNyYbz/byvKd8XLCJ3C/HzCYgXxx7zr14orlqQIL2Hnxa4relZ1jb46EUPDzip1telMIasJ9t3lLBpmVWLLyV+aKEPhdIr2pgQ7SjiYjvS1DxjV54ZbB1P1usm4d+wSVnGSArMgntVtMN9pVsBEtgD7ZucUwTT7Ho+ZGCs1RbOns3WOpXIx1p1TssjpT1Gp2MYvWHnDV8BQBTRyGN1eKWSm6Tz1dmjc+exDTaotxzaiWs1oGJ6ydFOV/Z7bV4En4mPfTdciZ5VnpZa9Va/aX2NDg0y8wWpjMvyfq/KN/s+RK8LFhxLAiAqCA6yipWQikk741PbIygROLVF5sn+D9H5kalfECEkQs1f7ZU/sj0IKDIKSSp6Q5fv9CrtjM7sXOvPJPAf6kLkIZnGTuVFocvi7kXXnHilPjt4R1mQjdefLi1GG18+GgL3rbXqjfj0EUQKY+JySuc1vnZsnEaOIf1hUr1obnf3JBh/dth8Zms5TqV/xpwFta/OX4Ya3b0kfdXtJcMysmIE5QQ4mZK+8yV5PU=
+  file: tail_exporter.x86_64
+  on:
+    repo: wrouesnel/tail_exporter
+    tags: true
+    branch: master

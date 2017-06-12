@@ -1,11 +1,33 @@
 metric_configs:
-- name: exim_mail_count
-  help: counter of mail processing results
-  type: counter
-  regex: '^METRICS: uuid=(\S+) result=(\S+)'
+- name: example_counter
+  help: example_counter only ever goes up, or implies resets
+  regex: '^COUNTER: (\S+)=(\S+) (\S+)=(\S+) (\d+)'
   labels:
-  - name: uuid
-    value: $1
-  - name: result
+  - name: $1
     value: $2
-  value: increment
+  - name: $3
+    value: $4
+  value: +$5
+  timeout: 5s
+  
+- name: example_gauge
+  help: example_gauge should probably just set itself
+  regex: '^GAUGE: (\S+)=(\S+) (\S+)=(\S+) (\d+)'
+  labels:
+  - name: $1
+    value: $2
+  - name: $3
+    value: $4
+  value: =$5
+
+
+- name: example_untyped
+  help: example_untyped can do whatever it wants
+  regex: '^UNTYPED: (\S+)=(\S+) (\S+)=(\S+) (\d+)'
+  labels:
+  - name: $1
+    value: $2
+  - name: $3
+    value: $4
+  value: =$5
+
