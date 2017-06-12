@@ -95,6 +95,18 @@
 			"revisionTime": "2016-08-04T10:47:26Z"
 		},
 		{
+			"checksumSHA1": "nNVawXmoJfWdM/HeTep14mu7DDw=",
+			"path": "github.com/cornelk/hashmap",
+			"revision": "5fee90babde75fb6e9065a9c6459202a3a47ae32",
+			"revisionTime": "2017-03-23T05:54:48Z"
+		},
+		{
+			"checksumSHA1": "xqVDKHGnakGlcRhmWd1j9JYmfLc=",
+			"path": "github.com/dchest/siphash",
+			"revision": "4ebf1de738443ea7f45f02dc394c4df1942a126d",
+			"revisionTime": "2016-08-31T15:17:26Z"
+		},
+		{
 			"checksumSHA1": "lT/hy5HfhxpMqSMDdtrSrVgtwgs=",
 			"path": "github.com/glenn-brown/golang-pkg-pcre/src/pkg/pcre",
 			"revision": "48bb82a8b8ceea98f4e97825b43870f6ba1970d6",
