@@ -20,8 +20,8 @@ import (
 
 	"fmt"
 	"github.com/cornelk/hashmap"
-	"unsafe"
 	"time"
+	"unsafe"
 )
 
 // Namespace is the metric namespace of this collector
