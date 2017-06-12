@@ -1,6 +1,8 @@
 
+pcre-8.40/Makefile:
+	( cd pcre-8.40 && ./configure )
+
 all:
-	#( cd pcre-8.40 && ./configure )
 	$(MAKE) -C pcre-8.40 all
 	
 clean:
